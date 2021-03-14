@@ -4,6 +4,7 @@ from redbot.core import checks, commands, Config
 from redbot.core.i18n import cog_i18n, Translator, set_contextual_locales_from_guild
 from redbot.core.utils._internal_utils import send_to_owners_with_prefix_replaced
 from redbot.core.utils.chat_formatting import escape, pagify
+from redbot.core.utils.predicates import MessagePredicate
 
 from .streamtypes import (
     HitboxStream,
@@ -31,6 +32,7 @@ import contextlib
 from datetime import datetime
 from collections import defaultdict
 from typing import Optional, List, Tuple, Union, Dict
+from urllib.parse import urlencode
 
 _ = Translator("Streams", __file__)
 log = logging.getLogger("red.core.cogs.Streams")
@@ -516,6 +518,52 @@ class Streams(commands.Cog):
         )
 
         await ctx.maybe_send_embed(message)
+
+    @streamset.command()
+    @checks.is_owner()
+    async def youtubeauth(self, ctx: commands.Context):
+        """Request Youtube Authorization Key"""
+        base_url = "https://accounts.google.com/o/oauth2/v2/auth"
+        creds = await self.bot.get_shared_api_tokens("youtube")
+        client_id = creds.get("client_id")
+        redirect_uri = creds.get("redirect_uri")
+        params = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": "https://www.googleapis.com/auth/youtube.readonly",
+            "access_type": "offline",
+        }
+        url = base_url + "?" + urlencode(params)
+        msg = _(
+            "Please visit the following URL and Authorize your account."
+            "Afterwards paste the portion after `code=` in this channel.\n\n{url}"
+            ).format(url=url)
+        await ctx.send(msg)
+        pred = MessagePredicate.same_context(ctx)
+        try:
+            result = await ctx.bot.wait_for("message", check=pred, timeout=300)
+        except asyncio.TimeoutError:
+            return await ctx.send(_("Setting YouTube user auth cancelled due to timeout."))
+        auth = result.content
+        log.debug(pred.result)
+        token_url = "https://oauth2.googleapis.com/token"
+        client_secret = creds.get("client_secret")
+        params = {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code": auth,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(token_url, params=params) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    log.debug(data)
+                    await self.bot.set_shared_api_tokens("youtube", **data)
+                else:
+                    log.debug(await resp.json())
 
     @streamset.group()
     @commands.guild_only()

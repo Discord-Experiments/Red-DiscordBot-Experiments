@@ -32,6 +32,7 @@ YOUTUBE_CHANNELS_ENDPOINT = YOUTUBE_BASE_URL + "/channels"
 YOUTUBE_SEARCH_ENDPOINT = YOUTUBE_BASE_URL + "/search"
 YOUTUBE_VIDEOS_ENDPOINT = YOUTUBE_BASE_URL + "/videos"
 YOUTUBE_CHANNEL_RSS = "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+YOUTUBE_OAUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 
 _ = Translator("Streams", __file__)
 
@@ -95,6 +96,13 @@ class YoutubeStream(Stream):
 
         super().__init__(**kwargs)
 
+    def make_header(self):
+        token_type = self._token.get("token_type")
+        access_token = self._token.get("access_token")
+        if not token_type or not access_token:
+            return {}
+        return {"Authorization": "{} {}".format(token_type, access_token)}
+
     async def is_online(self):
         if not self._token:
             raise InvalidYoutubeCredentials("YouTube API key is not set.")
@@ -119,13 +127,23 @@ class YoutubeStream(Stream):
                 log.debug(f"video_id in not_livestreams: {video_id}")
                 continue
             log.debug(f"video_id not in not_livestreams: {video_id}")
-            params = {
-                "key": self._token["api_key"],
-                "id": video_id,
-                "part": "id,liveStreamingDetails",
-            }
+            access_token = self._token.get("access_token")
+            if not access_token:
+                params = {
+                    "key": self._token["api_key"],
+                    "id": video_id,
+                    "part": "id,liveStreamingDetails",
+                }
+            else:
+                params = {
+                    "access_token": access_token,
+                    "id": video_id,
+                    "part": "id,liveStreamingDetails",
+                }
             async with aiohttp.ClientSession() as session:
-                async with session.get(YOUTUBE_VIDEOS_ENDPOINT, params=params) as r:
+                async with session.get(
+                    YOUTUBE_VIDEOS_ENDPOINT, params=params, headers=self.make_header()
+                ) as r:
                     data = await r.json()
                     try:
                         self._check_api_errors(data)
@@ -171,13 +189,24 @@ class YoutubeStream(Stream):
         # info from the RSS ... but incase you don't wanna deal with fully rewritting the
         # code for this part, as this is only a 2 quota query.
         if self.livestreams:
-            params = {
-                "key": self._token["api_key"],
-                "id": self.livestreams[-1],
-                "part": "snippet,liveStreamingDetails",
-            }
+            access_token = self._token.get("access_token")
+            if not access_token:
+                params = {
+                    "key": self._token["api_key"],
+                    "id": self.livestreams[-1],
+                    "part": "snippet,liveStreamingDetails",
+                }
+            else:
+                params = {
+                    "access_token": access_token,
+                    "id": self.livestreams[-1],
+                    "part": "snippet,liveStreamingDetails",
+                }
+
             async with aiohttp.ClientSession() as session:
-                async with session.get(YOUTUBE_VIDEOS_ENDPOINT, params=params) as r:
+                async with session.get(
+                    YOUTUBE_VIDEOS_ENDPOINT, params=params, headers=self.make_header()
+                ) as r:
                     data = await r.json()
             return await self.make_embed(data)
         raise OfflineStream()
@@ -231,15 +260,27 @@ class YoutubeStream(Stream):
         return snippet["title"]
 
     async def _fetch_channel_resource(self, resource: str):
-
-        params = {"key": self._token["api_key"], "part": resource}
+        access_token = self._token.get("access_token")
+        if not access_token:
+            params = {
+                "key": self._token["api_key"],
+                "part": resource,
+            }
+        else:
+            params = {
+                "access_token": access_token,
+                "part": resource,
+            }
         if resource == "id":
             params["forUsername"] = self.name
         else:
             params["id"] = self.id
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(YOUTUBE_CHANNELS_ENDPOINT, params=params) as r:
+            async with session.get(
+                YOUTUBE_CHANNELS_ENDPOINT, params=params, headers=self.make_header()
+            ) as r:
+                # log.debug(r.url)
                 data = await r.json()
 
         self._check_api_errors(data)
@@ -257,6 +298,7 @@ class YoutubeStream(Stream):
 
     def _check_api_errors(self, data: dict):
         if "error" in data:
+            log.debug(data)
             error_code = data["error"]["code"]
             if error_code == 400 and data["error"]["errors"][0]["reason"] == "keyInvalid":
                 raise InvalidYoutubeCredentials()
